@@ -15,11 +15,11 @@
 
 ## 3. Development Milestones
 - **2026-02-20**: Initial MVP Setup (React/Node.js).
-- **2026-02-20**: Gemini 1.5 Integration for Semantic Translation.
-- **2026-02-20**: Official Design Refresh (Academic/Official Look & Feel).
-- **2026-02-20**: Real-time Webcam & AI Overlay integration.
+- **2026-02-22**: [Heo-Saeng Routine] Semantic NMT & Voice Persona Integration.
+   - **Zero-shot Voice Cloning**: ElevenLabs API를 활용하여 연사의 목소리 톤과 감정을 유지한 채 타국어로 더빙하는 기술 실증.
+   - **Semantic Context Engine**: 단순 직역이 아닌 강연의 맥락과 전문 용어를 유지하는 고도화된 NMT 로직 탑재.
+   - **Academic UX Finalized**: 글로벌 세미나 환경에 최적화된 프리미엄 다크 테마 및 타이포그래피 완성.
 
 ## 4. Market Positioning
-- Not just "Subtitles", but "Presence".
-- Preserving the speaker's original soul (Voice, Emotion) and physical appearance while delivering wisdom in any language.
-- Premium price point for exclusive seminar environments.
+- **Not just "Subtitles", but "Presence"**: 연사의 외양(Visual)과 목소리(Voice)를 언어의 장벽 없이 전달하는 'Multimodal Persona' 기술 지향.
+- **Premium Knowledge Asset**: NotebookLM을 통해 강연 데이터를 분석하고 마케팅 자료로 즉시 전환하는 워크플로우 구축.
