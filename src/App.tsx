@@ -10,6 +10,13 @@ const LANGUAGES = [
   { code: 'ja', name: 'Japanese', flag: '🇯🇵' },
 ];
 
+const VOICES = [
+  { id: '21m00Tcm4lpxNFCpHZ1M', name: 'Rachel (Professional)' },
+  { id: 'ErXw9S1q38YvI0E2yyE8', name: 'Antoni (Calm)' },
+  { id: 'EXAVITpSAn99nh8B5vCr', name: 'Bella (Soft)' },
+  { id: 'GBv7mTt0atIp3i8iCnoE', name: 'Thomas (Deep)' },
+];
+
 function App() {
   const [view, setView] = useState<'dashboard' | 'audience' | 'screen'>('dashboard');
   const [isEngineLive, setIsEngineLive] = useState(false);
@@ -17,6 +24,7 @@ function App() {
   const [translatedSpeech, setTranslatedSpeech] = useState("신사 숙녀 여러분, 오늘 이 자리에 오게 되어 영광입니다.");
   const [selectedLang, setSelectedLang] = useState('ko');
   const [isTranslating, setIsTranslating] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState(VOICES[0].id);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageVideoRef = useRef<HTMLVideoElement>(null);
@@ -55,8 +63,8 @@ function App() {
         const translated = await translateText(randomChunk, selectedLang);
         if (translated) {
           setTranslatedSpeech(translated);
-          // 2. Synthesize Voice (Optional: Add ElevenLabs Key to .env)
-          const audioUrl = await synthesizeText(translated);
+          // 2. Synthesize Voice
+          const audioUrl = await synthesizeText(translated, selectedVoice);
           if (audioUrl) {
             audioRef.current.src = audioUrl;
             audioRef.current.play();
@@ -122,7 +130,12 @@ function App() {
               </div>
             </div>
             <div className="overlay-captions">
-              {isEngineLive && <p className="animate-pulse-slow">{translatedSpeech}</p>}
+              {isEngineLive && (
+                <>
+                  <p className="original-speech-hint" style={{ fontSize: '0.8rem', opacity: 0.6, marginBottom: '5px' }}>Recognized: {currentSpeech}</p>
+                  <p className="animate-pulse-slow">{translatedSpeech}</p>
+                </>
+              )}
             </div>
           </div>
           <div className="controls">
@@ -153,6 +166,17 @@ function App() {
 
         <section className="config glass">
           <h3><span className="icon">⚙️</span> Session Config</h3>
+          <div className="voice-selector" style={{ marginBottom: '20px' }}>
+            <label style={{ display: 'block', fontSize: '0.8rem', color: '#94a3b8', marginBottom: '8px' }}>AI Voice Profile</label>
+            <select
+              value={selectedVoice}
+              onChange={(e) => setSelectedVoice(e.target.value)}
+              className="glass-select"
+              style={{ width: '100%', padding: '10px', borderRadius: '8px', background: 'rgba(255,255,255,0.05)', color: 'white', border: '1px solid rgba(255,255,255,0.1)' }}
+            >
+              {VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </div>
           <div className="qr-preview">
             <div className="qr-code">QR</div>
             <p>Scan to join the audience</p>
