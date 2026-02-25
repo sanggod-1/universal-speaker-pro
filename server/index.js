@@ -32,7 +32,7 @@ const genAI = new GoogleGenerativeAI(apiKey || "");
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', engine: 'Universal Speaker Pro', model: 'gemini-2.5-flash' });
+    res.json({ status: 'ok', engine: 'Universal Speaker Pro', model: 'gemini-1.5-flash-latest' });
 });
 
 const contextCache = new Map(); // Global session context storage
@@ -51,31 +51,26 @@ app.post('/api/translate', async (req, res) => {
 
     try {
         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-        const prompt = `You are a world-class simultaneous interpreter specializing in medical, tech, and business seminars.
+        const prompt = `You are an elite simultaneous interpreter.
         
-        SESSION CONTEXT (last few turns): 
-        ${recentContext.join(" > ")}
+        CONTEXT: ${recentContext.join(" | ")}
         
-        TASK: Translate current speech into [${targetLang}].
-        SPEAKER PROFILE: ${speakerProfile}
+        TASK:
+        1. Translate: "${text}" into [${targetLang}].
+        2. Contextual Link: Ensure this follows the flow of previous sentences.
+        3. Identity: Speaker is a "${speakerProfile}". Use appropriate honorifics.
         
-        ULTIMATE SOPHISTICATION GUIDELINES:
-        1. TERMINOLOGY CONSISTENCY: Maintain the same terminology used in the Session Context.
-        2. DOMAIN EXPERTISE: Adopt the persona of "${speakerProfile}". Use appropriate industry jargon, formal structures, or natural flow based on this profile.
-        3. SPEAKER IDENTIFICATION: If multiple speakers are detected in the context, clearly label them (e.g., [Speaker A]: Translated text).
-        4. DYNAMIC FLOW: Adjust the grammar of ${targetLang} to perfectly match the emotional intensity of the speaker.
-        
-        STRICT RULES:
-        - Output ONLY the translated result text. No meta-talk.
-        
-        CURRENT TEXT: "${text}"`;
+        RULES:
+        - Output ONLY the translation.
+        - NO explanation. No quotes.
+        - If input is a short fragment, wait for context or translate naturally.`;
 
         const result = await model.generateContent(prompt);
-        const translatedText = result.response.text().trim();
+        const translatedText = result.response.text().trim().replace(/^"|"$/g, '');
         console.log(`[Translate] ✓ ${translatedText.substring(0, 40)}...`);
         res.json({ translatedText });
     } catch (error) {
-        console.error("[Translate] ERROR:", error.message);
+        console.error("[Translate] DETAILED ERROR:", error);
         // Fallback: return a meaningful demo translation
         const fallbacks = {
             'ko': '(번역 처리 중... 잠시 후 다시 시도합니다)',
@@ -96,7 +91,12 @@ app.post('/api/synthesize', async (req, res) => {
     console.log(`[Synthesize] voice=${voiceId}: ${text.substring(0, 30)}...`);
 
     if (!process.env.ELEVENLABS_API_KEY) {
-        return res.json({ audioUrl: null, message: "Voice synthesis available with ElevenLabs API key" });
+        return res.json({
+            audioUrl: null,
+            useBrowserTTS: true,
+            textToSpeak: text,
+            message: "Using Browser Native TTS (No API Key Required)"
+        });
     }
 
     try {

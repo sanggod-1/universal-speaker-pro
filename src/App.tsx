@@ -21,7 +21,6 @@ const VOICES = [
   { id: 'GBv7mTt0atIp3i8iCnoE', name: 'Thomas — Deep Presence' },
 ];
 
-// Demo speech chunks for showcase mode
 const DEMO_SPEECHES = [
   "Ladies and Gentlemen, it is a great honor to stand before this distinguished audience today.",
   "Artificial Intelligence is not replacing human creativity. It is amplifying it beyond measure.",
@@ -29,6 +28,9 @@ const DEMO_SPEECHES = [
   "The future of global discourse depends on breaking down language barriers with technology.",
   "Universal Speaker Pro represents a paradigm shift in how we experience multilingual events.",
 ];
+
+// Global volume ref to share across components without re-renders
+const globalVolumeRef = { current: 0 };
 
 function App() {
   const [view, setView] = useState<'dashboard' | 'audience' | 'screen'>('dashboard');
@@ -44,22 +46,48 @@ function App() {
   const [useMic, setUseMic] = useState(false);
   const [webcamActive, setWebcamActive] = useState(false);
   const [speakerProfile, setSpeakerProfile] = useState("Professional Seminar Speaker");
+  const [sourceLang, setSourceLang] = useState('ko-KR');
+  const [serverStatus, setServerStatus] = useState<'online' | 'offline' | 'checking'>('checking');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageVideoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(new Audio());
   const recognitionRef = useRef<any>(null);
   const demoIndexRef = useRef(0);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  // Webcam Setup
+  // Singleton Audio Analysis Setup
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+
+  // Server Health Check
   useEffect(() => {
-    let stream: MediaStream | null = null;
-    async function setupWebcam() {
+    const checkHealth = async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const response = await fetch('http://localhost:5001/api/health');
+        if (response.ok) setServerStatus('online');
+        else setServerStatus('offline');
+      } catch (err) {
+        setServerStatus('offline');
+      }
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Persistent Webcam Management
+  useEffect(() => {
+    async function setupWebcam() {
+      if (streamRef.current) return; // Already have one
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        streamRef.current = stream;
+        setWebcamActive(true);
+        // Bind to refs if they exist
         if (videoRef.current) videoRef.current.srcObject = stream;
         if (stageVideoRef.current) stageVideoRef.current.srcObject = stream;
-        setWebcamActive(true);
       } catch (err) {
         console.warn("Webcam not accessible:", err);
         setWebcamActive(false);
@@ -67,11 +95,97 @@ function App() {
     }
     setupWebcam();
     return () => {
-      stream?.getTracks().forEach(t => t.stop());
+      // Don't stop on view change, only on actual unmount if necessary
     };
-  }, [view]);
+  }, []);
 
-  // Simulated audience count animation
+  // Web Wake Lock to prevent screen dimming
+  useEffect(() => {
+    let wakeLock: any = null;
+    const requestWakeLock = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+        }
+      } catch (err) { }
+    };
+    if (isEngineLive) requestWakeLock();
+    return () => {
+      if (wakeLock) wakeLock.release().then(() => { wakeLock = null; });
+    };
+  }, [isEngineLive]);
+
+  // Re-bind stream on view changes
+  useEffect(() => {
+    if (streamRef.current) {
+      const bindStream = () => {
+        if (videoRef.current && videoRef.current.srcObject !== streamRef.current) {
+          videoRef.current.srcObject = streamRef.current;
+        }
+        if (stageVideoRef.current && stageVideoRef.current.srcObject !== streamRef.current) {
+          stageVideoRef.current.srcObject = streamRef.current;
+        }
+      };
+      bindStream();
+      // Safety interval to ensure video doesn't freeze
+      const int = setInterval(bindStream, 3000);
+      return () => clearInterval(int);
+    }
+  }, [view, webcamActive, isEngineLive]);
+
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+  // Audio Analysis Logic
+  useEffect(() => {
+    if (isEngineLive) {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 64;
+      }
+
+      // Connect Mic for Visualization
+      if (useMic && !micSourceRef.current && audioContextRef.current && analyserRef.current) {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+          if (audioContextRef.current && analyserRef.current) {
+            micSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
+            micSourceRef.current.connect(analyserRef.current);
+          }
+        }).catch(err => console.warn("Mic visualization failed:", err));
+      }
+
+      if (!audioSourceRef.current && audioRef.current && audioContextRef.current && analyserRef.current) {
+        try {
+          audioSourceRef.current = audioContextRef.current.createMediaElementSource(audioRef.current);
+          audioSourceRef.current.connect(analyserRef.current);
+          analyserRef.current.connect(audioContextRef.current.destination);
+        } catch (e) {
+          console.warn("Audio source connection failed (likely already connected):", e);
+        }
+      }
+
+      const dataArray = new Uint8Array(analyserRef.current!.frequencyBinCount);
+      let frame: number;
+      const update = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        globalVolumeRef.current = Math.min((sum / dataArray.length) / 40, 1.5);
+        frame = requestAnimationFrame(update);
+      };
+      update();
+      return () => {
+        cancelAnimationFrame(frame);
+        if (micSourceRef.current) {
+          micSourceRef.current.disconnect();
+          micSourceRef.current = null;
+        }
+      };
+    }
+  }, [isEngineLive, useMic]);
+
+  // Audience count animation
   useEffect(() => {
     if (isEngineLive) {
       const target = 1248 + Math.floor(Math.random() * 200);
@@ -88,7 +202,7 @@ function App() {
     }
   }, [isEngineLive]);
 
-  // Demo mode translation cycle
+  // Translation Cycle (Demo)
   useEffect(() => {
     let interval: any;
     if (isEngineLive && !useMic) {
@@ -101,12 +215,10 @@ function App() {
 
         try {
           const translated = await translateText(speech, selectedLang, speakerProfile);
-          const elapsed = Date.now() - startTime;
-          setLatency(elapsed);
+          setLatency(Date.now() - startTime);
           if (translated) {
             setTranslatedSpeech(translated);
             setTranslationCount(prev => prev + 1);
-            // Voice synthesis (optional - depends on ElevenLabs key)
             const audioUrl = await synthesizeText(translated, selectedVoice);
             if (audioUrl) {
               audioRef.current.src = audioUrl;
@@ -114,84 +226,94 @@ function App() {
             }
           }
         } catch (e) {
-          console.error('Translation cycle error:', e);
+          console.error('Demo error:', e);
         }
         setIsTranslating(false);
       };
-
       runDemo();
       interval = setInterval(runDemo, 8000);
     }
-
     return () => {
       clearInterval(interval);
       audioRef.current.pause();
     };
-  }, [isEngineLive, selectedLang, useMic, selectedVoice]);
+  }, [isEngineLive, useMic, selectedLang, selectedVoice, speakerProfile]);
 
-  // Live Mic STT Mode (Web Speech API)
+  // STT Mode
   useEffect(() => {
     if (isEngineLive && useMic) {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        console.warn('Speech Recognition not supported');
-        return;
-      }
+      if (!SpeechRecognition) return;
 
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = 'en-US';
+      recognition.lang = sourceLang;
 
-      let lastFinal = '';
-
+      let lastFinalTranscript = '';
       recognition.onresult = async (event: any) => {
         let interim = '';
         let final = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            final += transcript;
-          } else {
-            interim += transcript;
-          }
+          if (event.results[i].isFinal) final += transcript;
+          else interim += transcript;
         }
 
         if (interim) setCurrentSpeech(interim);
 
-        if (final && final !== lastFinal) {
-          lastFinal = final;
+        // Use a small buffer to handle rapid speech/audiobooks
+        if (final && final !== lastFinalTranscript) {
+          lastFinalTranscript = final;
           setCurrentSpeech(final);
           setIsTranslating(true);
-          const startTime = Date.now();
-
+          const start = Date.now();
           try {
             const translated = await translateText(final, selectedLang, speakerProfile);
-            setLatency(Date.now() - startTime);
+            setLatency(Date.now() - start);
             if (translated) {
               setTranslatedSpeech(translated);
               setTranslationCount(prev => prev + 1);
+
+              const synthData = await synthesizeText(translated, selectedVoice);
+              if (synthData?.audioUrl) {
+                audioRef.current.src = synthData.audioUrl;
+                audioRef.current.play().catch(() => { });
+              } else if (synthData?.useBrowserTTS) {
+                window.speechSynthesis.cancel(); // Cancel previous to reduce overlap delay
+                const utterance = new SpeechSynthesisUtterance(synthData.textToSpeak);
+                utterance.lang = selectedLang;
+                const voices = window.speechSynthesis.getVoices();
+                const preferredVoice = voices.find(v => (v.name.includes('Google') || v.name.includes('Female') || v.name.includes('Natural')) && v.lang.startsWith(selectedLang))
+                  || voices.find(v => v.lang.startsWith(selectedLang));
+                if (preferredVoice) utterance.voice = preferredVoice;
+                utterance.rate = 1.2; // Even faster for rapid speech sync
+                window.speechSynthesis.speak(utterance);
+              }
             }
-          } catch (e) {
-            console.error('STT Translation error:', e);
-          }
+          } catch (e) { console.error(e); }
           setIsTranslating(false);
         }
       };
-
-      recognition.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
+      recognition.onend = () => {
+        if (isEngineLive && useMic && recognitionRef.current) {
+          try {
+            recognition.start();
+          } catch (e) {
+            console.error("Recognition restart error:", e);
+          }
+        }
       };
 
       recognition.start();
       recognitionRef.current = recognition;
-
       return () => {
-        recognition.stop();
         recognitionRef.current = null;
+        recognition.onend = null;
+        recognition.stop();
       };
     }
-  }, [isEngineLive, useMic, selectedLang]);
+  }, [isEngineLive, useMic, sourceLang, selectedLang, speakerProfile]);
 
   const toggleEngine = useCallback(() => {
     if (isEngineLive) {
@@ -199,6 +321,7 @@ function App() {
       setCurrentSpeech('');
       setTranslatedSpeech('');
       audioRef.current.pause();
+      globalVolumeRef.current = 0;
     } else {
       setIsEngineLive(true);
       demoIndexRef.current = 0;
@@ -207,245 +330,102 @@ function App() {
 
   const selectedLangObj = LANGUAGES.find(l => l.code === selectedLang) || LANGUAGES[0];
 
-  // ========== STAGE SCREEN VIEW ==========
-  const ScreenView = () => (
-    <div className="container screen-view">
-      <div className="main-stage glass">
-        <div className="live-video-rect">
-          <div className={`video-container large ${isTranslating ? 'processing' : ''}`}>
-            <video ref={stageVideoRef} autoPlay playsInline muted className="live-video" />
-            <div className="visual-ai-overlay">
-              {/* [2026 고도화] 번역 부하에 따른 동적 애니메이션 싱크 */}
-              <div
-                className="mouth-wave large"
-                style={{
-                  animationPlayState: isEngineLive ? 'running' : 'paused',
-                  animationDuration: isTranslating ? '0.5s' : '1.2s',
-                  filter: isTranslating ? 'drop-shadow(0 0 12px var(--glow-gold))' : 'none'
-                }}
-              />
-            </div>
-            {isEngineLive && (
-              <div className="ai-badge" style={{ background: isTranslating ? 'var(--accent-gold)' : 'rgba(0,0,0,0.6)' }}>
-                <div className="dot" style={{ animation: isTranslating ? 'pulse 0.5s infinite' : 'none' }} />
-                {isTranslating ? 'SEMANTIC ANALYZING...' : 'AI ENGINE STANDBY'}
-              </div>
-            )}
-            <div className="lang-badge-overlay">
-              {selectedLangObj.flag} Translating to {selectedLangObj.nameEn}
-              {latency > 0 && (
-                <span style={{
-                  marginLeft: '8px',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  fontSize: '0.65rem',
-                  background: latency < 800 ? '#10b981' : latency < 1500 ? '#f59e0b' : '#ef4444'
-                }}>
-                  {latency}ms
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="stage-captions">
-          {isEngineLive && translatedSpeech && (
-            <h1 key={translatedSpeech.substring(0, 20)}>{translatedSpeech}</h1>
-          )}
-        </div>
-
-        <div className="stage-meta">
-          <div className="qr-container">
-            <div className="qr-box">📱 QR</div>
-            <span>Scan to listen in your language</span>
-          </div>
-          <div className="live-badge">
-            {isEngineLive ? '● LIVE SEMANTIC TRANSLATION' : 'STANDBY'}
-          </div>
-        </div>
-      </div>
-      <button className="back-btn" onClick={() => setView('dashboard')}>← Return to Dashboard</button>
+  const MetricBox = ({ icon, label, value, sub }: any) => (
+    <div className="metric-box glass">
+      <div className="metric-icon">{icon}</div>
+      <h4>{label}</h4>
+      <div className="value">{value}</div>
+      <div className="sub">{sub}</div>
     </div>
   );
 
-  // ========== DASHBOARD ==========
   const Dashboard = () => (
     <div className="container dashboard">
       <header>
         <div className="logo">UNIVERSAL SPEAKER <span className="premium">PRO</span></div>
         <div className="status">
-          <span className={`indicator ${isEngineLive ? 'live' : ''}`} />
-          {isEngineLive ? 'ENGINE LIVE' : 'ENGINE READY'}
+          <span className={`indicator ${serverStatus === 'online' ? (isEngineLive ? 'live' : 'ready') : 'offline'}`} />
+          {serverStatus === 'online' ? (isEngineLive ? 'ENGINE LIVE' : 'ENGINE READY') : 'SERVER DISCONNECTED'}
         </div>
       </header>
-
       <main>
-        {/* Live Preview */}
         <section className="live-preview glass">
           <h3><span className="icon">🎬</span> AI Visual Sync Preview</h3>
-
           <div className="video-placeholder">
             <div className={`video-container ${isTranslating ? 'processing' : ''}`}>
-              {webcamActive ? (
-                <video ref={videoRef} autoPlay playsInline muted className="live-video" />
-              ) : (
-                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', flexDirection: 'column', gap: '8px' }}>
+              <video ref={videoRef} autoPlay playsInline muted className="live-video" style={{ opacity: webcamActive ? 1 : 0 }} />
+              {!webcamActive && (
+                <div className="camera-error">
                   <span style={{ fontSize: '2.5rem' }}>📷</span>
-                  <span style={{ fontSize: '0.8rem' }}>Camera Preview</span>
+                  <button onClick={() => window.location.reload()} className="secondary-btn">Restart Camera</button>
                 </div>
               )}
-              <div className="visual-ai-overlay">
-                <div className="mouth-wave" style={{ animationPlayState: isEngineLive ? 'running' : 'paused' }} />
-              </div>
-              {isEngineLive && (
-                <div className="ai-badge">
-                  <div className="dot" />
-                  {isTranslating ? 'PROCESSING...' : 'LISTENING'}
-                </div>
-              )}
+              <VisualSync isEngineLive={isEngineLive} isTranslating={isTranslating} />
             </div>
-
             {isEngineLive && (currentSpeech || translatedSpeech) && (
               <div className="overlay-captions">
                 <div className="caption-box">
-                  {currentSpeech && (
-                    <p className="original-speech-hint">
-                      🎙️ Recognized: {currentSpeech}
-                    </p>
-                  )}
-                  {translatedSpeech && (
-                    <p className="translated-text">{translatedSpeech}</p>
-                  )}
+                  {currentSpeech && <p className="original-speech-hint">🎙️ Recognized: {currentSpeech}</p>}
+                  {translatedSpeech && <p className="translated-text">{translatedSpeech}</p>}
                 </div>
               </div>
             )}
           </div>
-
           <div className="controls">
-            <button
-              className={`glow-btn ${isEngineLive ? 'stop' : ''}`}
-              onClick={toggleEngine}
-            >
-              {isEngineLive ? '■  PAUSE SESSION' : '▶  START GLOBAL BROADCAST'}
+            <button className={`glow-btn ${isEngineLive ? 'stop' : ''}`} onClick={toggleEngine}>
+              {isEngineLive ? '■ PAUSE SESSION' : '▶ START GLOBAL BROADCAST'}
             </button>
-            <button className="secondary-btn" onClick={() => setView('screen')}>
-              🖥 Stage Screen
-            </button>
-            <button className="secondary-btn" onClick={() => setView('audience')}>
-              📱 Audience View
-            </button>
+            <button className="secondary-btn" onClick={() => setView('screen')}>🖥 Stage Screen</button>
+            <button className="secondary-btn" onClick={() => setView('audience')}>📱 Audience View</button>
           </div>
-
-          {/* Input Mode Toggle */}
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '16px', gap: '8px' }}>
-            <button
-              className={`nav-tab ${!useMic ? 'active' : ''}`}
-              onClick={() => setUseMic(false)}
-              style={{ padding: '6px 16px', borderRadius: '6px', border: '1px solid var(--border)', background: !useMic ? 'var(--glow-gold)' : 'transparent', color: !useMic ? 'var(--accent-gold)' : 'var(--text-dim)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}
-            >
-              🎭 Demo Mode
-            </button>
-            <button
-              className={`nav-tab ${useMic ? 'active' : ''}`}
-              onClick={() => setUseMic(true)}
-              style={{ padding: '6px 16px', borderRadius: '6px', border: '1px solid var(--border)', background: useMic ? 'var(--glow-gold)' : 'transparent', color: useMic ? 'var(--accent-gold)' : 'var(--text-dim)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600 }}
-            >
-              🎤 Live Mic (STT)
-            </button>
+          <div className="mode-tabs">
+            <button className={`nav-tab ${!useMic ? 'active' : ''}`} onClick={() => setUseMic(false)}>🎭 Demo Mode</button>
+            <button className={`nav-tab ${useMic ? 'active' : ''}`} onClick={() => setUseMic(true)}>🎤 Live Mic (STT)</button>
           </div>
         </section>
-
-        {/* Metrics */}
         <div className="metrics-area">
-          <div className="metric-box glass">
-            <div className="metric-icon">👥</div>
-            <h4>Live Audience</h4>
-            <div className="value">{audienceCount.toLocaleString()}</div>
-            <div className="sub">Active connections</div>
-          </div>
-          <div className="metric-box glass">
-            <div className="metric-icon">🌍</div>
-            <h4>Target Language</h4>
-            <div className="value">{selectedLangObj.flag} {selectedLangObj.name}</div>
-            <div className="sub">{LANGUAGES.length} languages available</div>
-          </div>
-          <div className="metric-box glass">
-            <div className="metric-icon">⚡</div>
-            <h4>Sync Latency</h4>
-            <div className="value">{latency > 0 ? `${latency}ms` : '—'}</div>
-            <div className="sub">{latency <= 500 ? 'Ultra-low delay' : latency <= 1500 ? 'Normal' : 'High'}</div>
-          </div>
-          <div className="metric-box glass">
-            <div className="metric-icon">📊</div>
-            <h4>Translated</h4>
-            <div className="value">{translationCount}</div>
-            <div className="sub">Segments processed</div>
-          </div>
+          <MetricBox icon="👥" label="Live Audience" value={audienceCount.toLocaleString()} sub="Active connections" />
+          <MetricBox icon="🌍" label="Target Language" value={`${selectedLangObj.flag} ${selectedLangObj.name}`} sub={`${LANGUAGES.length} available`} />
+          <MetricBox icon="⚡" label="Sync Latency" value={latency > 0 ? `${latency}ms` : '—'} sub={latency <= 800 ? 'Ultra-low' : 'Normal'} />
+          <MetricBox icon="📊" label="Translated" value={translationCount} sub="Segments" />
         </div>
-
-        {/* Config */}
         <section className="config glass">
           <h3><span className="icon">⚙️</span> Session Config</h3>
-
           <div className="config-grid">
-            {/* Language Selection */}
-            <div>
-              <label className="config-label">Translation Target</label>
-              <div className="lang-grid">
-                {LANGUAGES.slice(0, 4).map(lang => (
-                  <button
-                    key={lang.code}
-                    className={`lang-chip ${selectedLang === lang.code ? 'active' : ''}`}
-                    onClick={() => setSelectedLang(lang.code)}
-                  >
-                    <span className="flag">{lang.flag}</span>
-                    {lang.name}
-                  </button>
-                ))}
-              </div>
-              <select
-                value={selectedLang}
-                onChange={(e) => setSelectedLang(e.target.value)}
-                className="glass-select"
-                style={{ marginTop: '8px' }}
-              >
-                {LANGUAGES.map(l => (
-                  <option key={l.code} value={l.code}>{l.flag} {l.nameEn} ({l.name})</option>
-                ))}
+            <div className="config-item">
+              <label>Translation Target</label>
+              <select value={selectedLang} onChange={(e) => setSelectedLang(e.target.value)} className="glass-select">
+                {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.flag} {l.nameEn}</option>)}
               </select>
             </div>
-
-            {/* Voice Profile */}
-            <div>
-              <label className="config-label">AI Voice Profile</label>
-              <select
-                value={selectedVoice}
-                onChange={(e) => setSelectedVoice(e.target.value)}
-                className="glass-select"
-              >
+            <div className="config-item">
+              <label>Speaker Language</label>
+              <select value={sourceLang} onChange={(e) => setSourceLang(e.target.value)} className="glass-select">
+                <option value="en-US">🇺🇸 English</option>
+                <option value="ko-KR">🇰🇷 한국어</option>
+                <option value="ja-JP">🇯🇵 日本語</option>
+                <option value="zh-CN">🇨🇳 中文</option>
+              </select>
+            </div>
+            <div className="config-item">
+              <label>AI Voice</label>
+              <select value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} className="glass-select">
                 {VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
             </div>
-
-            {/* Translation Domain (Speaker Profile) */}
-            <div>
-              <label className="config-label">Translation Domain</label>
-              <select
-                value={speakerProfile}
-                onChange={(e) => setSpeakerProfile(e.target.value)}
-                className="glass-select"
-              >
-                <option value="Professional Seminar Speaker">💼 General / Business</option>
-                <option value="Senior Medical Researcher/Doctor. Use precise medical terminology and professional tone.">⚕️ Medical / Dental</option>
-                <option value="Lead Tech Entrepreneur/Engineer. Use cutting-edge tech jargon and energetic tone.">🚀 Tech / IT</option>
-                <option value="Academic Professor. Use formal, academic, and highly structured language.">🎓 Academic</option>
+            <div className="config-item">
+              <label>Domain</label>
+              <select value={speakerProfile} onChange={(e) => setSpeakerProfile(e.target.value)} className="glass-select">
+                <option value="Professional Seminar Speaker">💼 Business</option>
+                <option value="Senior Medical Researcher/Doctor.">⚕️ Medical</option>
+                <option value="Lead Tech Entrepreneur/Engineer.">🚀 Tech</option>
               </select>
             </div>
-
-            {/* QR */}
             <div className="qr-preview">
-              <div className="qr-code">📱 QR</div>
-              <p>Share this link with your audience</p>
+              <div className="qr-code shadow-glow">
+                <img src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(window.location.href.replace('dashboard', 'audience'))}&color=d4a853&bgcolor=030712`} alt="QR" />
+              </div>
+              <p>Audience Access</p>
             </div>
           </div>
         </section>
@@ -453,45 +433,47 @@ function App() {
     </div>
   );
 
-  // ========== AUDIENCE PAGE ==========
+  const ScreenView = () => (
+    <div className="container screen-view">
+      <div className="main-stage glass">
+        <div className="live-video-rect">
+          <div className={`video-container large ${isTranslating ? 'processing' : ''}`}>
+            <video ref={stageVideoRef} autoPlay playsInline muted className="live-video" style={{ opacity: webcamActive ? 1 : 0 }} />
+            <VisualSync isEngineLive={isEngineLive} isTranslating={isTranslating} isLarge />
+          </div>
+        </div>
+        <div className="stage-captions">
+          {isEngineLive && translatedSpeech && <h1>{translatedSpeech}</h1>}
+        </div>
+        <div className="stage-meta">
+          <div className="live-badge">{isEngineLive ? '● LIVE' : 'STANDBY'}</div>
+          <div className="qr-container">
+            <div className="qr-box shadow-glow">
+              <img src={`https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=${encodeURIComponent(window.location.href)}&color=d4a853&bgcolor=030712`} alt="QR" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <button className="back-btn" onClick={() => setView('dashboard')}>← Back</button>
+    </div>
+  );
+
   const AudiencePage = () => (
     <div className="audience-page">
       <div className="audience-card glass">
-        <h2>🌐 Universal Speaker Pro</h2>
-        <p className="audience-subtitle">Select your preferred language to receive live translation</p>
-
+        <h2>🌐 Live Translation</h2>
         <div className="lang-list">
           {LANGUAGES.map(lang => (
-            <button
-              key={lang.code}
-              className={`lang-item ${selectedLang === lang.code ? 'active' : ''}`}
-              onClick={() => setSelectedLang(lang.code)}
-            >
-              <span className="flag">{lang.flag}</span>
-              <span className="name">{lang.name}</span>
+            <button key={lang.code} className={`lang-item ${selectedLang === lang.code ? 'active' : ''}`} onClick={() => setSelectedLang(lang.code)}>
+              <span className="flag">{lang.flag}</span> {lang.name}
             </button>
           ))}
         </div>
-
         <div className="listening-status">
-          <div className="listening-label">
-            {isEngineLive ? '● Live Translation Active' : '○ Waiting for broadcast...'}
-          </div>
-          {isEngineLive && (
-            <>
-              <div className="audio-visualizer">
-                {[...Array(12)].map((_, i) => (
-                  <div key={i} className="bar" style={{ height: `${20 + Math.random() * 80}%` }} />
-                ))}
-              </div>
-              {translatedSpeech && (
-                <div className="audience-translated-text">{translatedSpeech}</div>
-              )}
-            </>
-          )}
+          <div className="listening-label">{isEngineLive ? '● Listening...' : '○ Waiting...'}</div>
+          {isEngineLive && translatedSpeech && <div className="audience-translated-text">{translatedSpeech}</div>}
         </div>
-
-        <button className="back-btn" onClick={() => setView('dashboard')}>← Return to Dashboard</button>
+        <button className="back-btn" onClick={() => setView('dashboard')}>← Back</button>
       </div>
     </div>
   );
@@ -504,5 +486,44 @@ function App() {
     </div>
   );
 }
+
+// ========== VISUAL SYNC COMPONENT (Optimized) ==========
+const VisualSync = ({ isEngineLive, isTranslating, isLarge = false }: any) => {
+  const [vol, setVol] = useState(0);
+
+  useEffect(() => {
+    if (isEngineLive) {
+      let frame: number;
+      const update = () => {
+        setVol(globalVolumeRef.current);
+        frame = requestAnimationFrame(update);
+      };
+      update();
+      return () => cancelAnimationFrame(frame);
+    } else {
+      setVol(0);
+    }
+  }, [isEngineLive]);
+
+  return (
+    <>
+      <div className="visual-ai-overlay">
+        <div
+          className={`mouth-wave ${isLarge ? 'large' : ''}`}
+          style={{
+            opacity: vol > 0.1 ? (isLarge ? 0.9 : 0.8) : 0,
+            transform: `scaleX(${0.5 + vol}) scaleY(${1 + vol * (isLarge ? 2 : 1.5)})`,
+            filter: isTranslating ? 'drop-shadow(0 0 12px var(--glow-gold))' : 'none',
+            transition: 'opacity 0.1s ease, transform 0.05s ease'
+          }}
+        />
+      </div>
+      <div className="ai-badge" style={{ background: isTranslating ? 'var(--accent-gold)' : 'rgba(0,0,0,0.6)', opacity: isEngineLive ? 1 : 0 }}>
+        <div className="dot" style={{ animation: isTranslating ? 'pulse 0.5s infinite' : 'none' }} />
+        {isTranslating ? (isLarge ? 'SEMANTIC ANALYZING...' : 'PROCESSING...') : (isLarge ? 'AI ENGINE STANDBY' : 'LISTENING')}
+      </div>
+    </>
+  );
+};
 
 export default App;

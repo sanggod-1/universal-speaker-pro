@@ -33,7 +33,8 @@ export const synthesizeText = async (text: string, voiceId?: string) => {
         });
 
         const data = await response.json();
-        return data.audioUrl;
+        // Return full data to handle browser TTS fallback
+        return data;
     } catch (error) {
         console.error('Synthesis error:', error);
         return null;

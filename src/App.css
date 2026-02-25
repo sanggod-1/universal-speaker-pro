@@ -68,10 +68,29 @@ header {
   transition: all 0.3s;
 }
 
+.indicator.ready {
+  background: var(--accent-blue);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.4);
+}
+
 .indicator.live {
   background: var(--accent-emerald);
-  box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
-  animation: blink 1.5s infinite;
+  box-shadow: 0 0 15px rgba(16, 185, 129, 1);
+  animation: blink 1s infinite alternate;
+}
+
+.indicator.offline {
+  background: var(--accent-red);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+}
+
+.shadow-glow {
+  box-shadow: 0 0 25px rgba(212, 168, 83, 0.25);
+  transition: box-shadow 0.3s ease;
+}
+
+.shadow-glow:hover {
+  box-shadow: 0 0 35px rgba(212, 168, 83, 0.4);
 }
 
 /* ========== DASHBOARD LAYOUT ========== */
@@ -165,20 +184,28 @@ header {
   bottom: 12%;
   left: 25%;
   width: 50%;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, var(--accent-gold), transparent);
+  height: 8px;
+  background: linear-gradient(90deg, transparent, var(--accent-gold), var(--accent-gold-light), var(--accent-gold), transparent);
+  border-radius: 50%;
+  filter: blur(2px);
   opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.mouth-wave[style*="running"] {
-  opacity: 0.7;
-  animation: wave-flow 2s infinite linear;
+  transition: opacity 0.3s, transform 0.1s ease-out;
+  box-shadow: 0 0 15px var(--glow-gold);
 }
 
 .mouth-wave.large {
-  height: 4px;
-  bottom: 8%;
+  height: 12px;
+  bottom: 10%;
+}
+
+@keyframes wave-flow {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 /* AI Processing Badge */
